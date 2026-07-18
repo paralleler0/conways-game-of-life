@@ -1,0 +1,517 @@
+<!DOCTYPE html>
+<html lang="en">
+   <head>
+      <meta charset="UTF-8">
+      <meta name="viewport" content="width=device-width, initial-scale=1.0">
+      <title>Custom Game of Life Emulator</title>
+      <style>
+         body {
+         font-family: Arial, sans-serif;
+         background-color: #1e1e1e;
+         color: #ffffff;
+         display: flex;
+         flex-direction: column;
+         align-items: center;
+         padding: 20px;
+         }
+         canvas {
+         border: 2px solid #444;
+         background-color: #000000;
+         cursor: grab;
+         margin-top: 15px;
+         }
+         canvas:active {
+         cursor: grabbing;
+         }
+         .controls {
+         margin-top: 20px;
+         display: flex;
+         gap: 15px;
+         align-items: center;
+         flex-wrap: wrap;
+         justify-content: center;
+         max-width: 900px;
+         }
+         input, select, button {
+         padding: 8px;
+         border-radius: 5px;
+         border: none;
+         }
+         input[type="number"] {
+         width: 70px;
+         }
+         input[type="range"] {
+         vertical-align: middle;
+         }
+         button {
+         background-color: #007acc;
+         color: white;
+         cursor: pointer;
+         font-weight: bold;
+         }
+         button:hover {
+         background-color: #005999;
+         }
+      </style>
+   </head>
+   <body>
+      <h1>Game of Life Emulator</h1>
+      <div class="controls">
+         <label>Rulestring: <input type="text" id="ruleInput" value="B3/S23"></label>
+         <label>
+            Boundary: 
+            <select id="boundInput" onchange="handleBoundaryChange()">
+               <option value="torus">Wrapping (Torus)</option>
+               <option value="fixed">Dead Edge (Fixed)</option>
+               <option value="clamp">Clamped Edge (Sticky)</option>
+               <option value="infinite" selected>Infinite Grid (Pan/Zoom)</option>
+            </select>
+         </label>
+         <label>Width: <input type="number" id="widthInput" value="600" min="100" max="2000" step="50"></label>
+         <label>Height: <input type="number" id="heightInput" value="600" min="100" max="2000" step="50"></label>
+         <label>Cell Size: <input type="number" id="resInput" value="10" min="2" max="50"></label>
+         <button onclick="updateSize()">Apply Size</button>
+         <!-- Speed Slider -->
+         <label>Speed (FPS): 
+         <input type="range" id="speedInput" min="1" max="60" value="30" oninput="updateFPSLabel(this.value)">
+         <span id="fpsLabel">30</span>
+         </label>
+         <!-- New Density Slider -->
+         <label>Density: 
+         <input type="range" id="densityInput" min="1" max="100" value="30" oninput="updateDensityLabel(this.value)">
+         <span id="densityLabel">30</span>%
+         </label>
+         <button onclick="startSimulation()">Start</button>
+         <button onclick="pauseSimulation()">Pause</button>
+         <button onclick="randomizeGrid()">Randomize</button>
+         <button onclick="clearGrid()">Clear</button>
+      </div>
+      <!-- Instructions for the user -->
+      <p id="instructionText" style="color: #aaa; font-size: 14px; margin-top: 15px;">
+         💡 <strong>Controls:</strong> Shift + Left-click/drag to pan view. Scroll to zoom. Left-click to paint cells. Right-click to erase.
+      </p>
+      <canvas id="lifeCanvas" width="600" height="600"></canvas>
+      <script>
+const canvas = document.getElementById('lifeCanvas');
+const ctx = canvas.getContext('2d');
+let resolution = 10;
+let cols = canvas.width / resolution;
+let rows = canvas.height / resolution;
+
+// Double buffering to eliminate GC pauses
+let grid;
+let nextGrid;
+
+let animationId = null;
+let isRunning = false;
+let fps = 30;
+let offsetX = 0;
+let offsetY = 0;
+let scale = 1;
+let isDrawing = false;
+let isPanning = false;
+let startPanX = 0;
+let startPanY = 0;
+let drawMode = 1;
+
+// Cached rule arrays updated only when inputs change
+let cachedBirth
+let cachedSurvival
+
+function pack(x, y) {
+    // Fast shift operations using 32-bit integers inside BigInt
+    return (BigInt(x & 0xFFFFFFFF) << 32n) | BigInt(y & 0xFFFFFFFF);
+}
+
+function unpack(packed) {
+    const x = Number(packed >> 32n) | 0;
+    const y = Number(packed & 0xFFFFFFFFn) | 0;
+    return [x, y];
+}
+
+function updateFPSLabel(val) {
+    fps = parseInt(val);
+    document.getElementById('fpsLabel').innerText = val;
+}
+
+function updateDensityLabel(val) {
+    document.getElementById('densityLabel').innerText = val;
+}
+
+// Allocates memory once
+function allocateFiniteGrid() {
+    let arr = new Array(cols);
+    for (let i = 0; i < arr.length; i++) {
+        arr[i] = new Array(rows).fill(0);
+    }
+    return arr;
+}
+
+function makeGrid() {
+    const boundType = document.getElementById('boundInput').value;
+    if (boundType === 'infinite') {
+        return new Set();
+    }
+    return allocateFiniteGrid();
+}
+
+// Cache rules on demand instead of every frame
+function cacheRules() {
+    const ruleStr = document.getElementById('ruleInput').value;
+    const birth = [];
+    const survival = [];
+    let part = 'B';
+    for (let char of ruleStr.toUpperCase()) {
+        if (char === 'B') part = 'B';
+        else if (char === 'S') part = 'S';
+        else if (!isNaN(parseInt(char))) {
+            if (part === 'B') birth.push(parseInt(char));
+            if (part === 'S') survival.push(parseInt(char));
+        }
+    }
+    cachedBirth = birth;
+    cachedSurvival = survival;
+}
+
+function handleBoundaryChange() {
+    const boundType = document.getElementById('boundInput').value;
+    const instructions = document.getElementById('instructionText');
+    if (boundType === 'infinite') {
+        instructions.innerHTML = `💡 <strong>Infinite Controls:</strong> Shift + Left-click & drag to pan. Scroll wheel to zoom. Left-click to draw. Right-click to erase.`;
+    } else {
+        instructions.innerHTML = `💡 <strong>Controls:</strong> Left-click and drag to paint cells. Right-click and drag to erase.`;
+    }
+    clearGrid();
+}
+
+function updateSize() { 
+    // Save simulation state
+    const wasRunning = isRunning; 
+    pauseSimulation(); 
+
+    // Read and validate layout inputs
+    const newWidth = parseInt(document.getElementById('widthInput').value) || 600; 
+    const newHeight = parseInt(document.getElementById('heightInput').value) || 600; 
+    resolution = parseInt(document.getElementById('resInput').value) || 10; 
+
+    // Apply new canvas dimensions
+    canvas.width = newWidth; 
+    canvas.height = newHeight; 
+
+    // Recalculate grid dimensions
+    cols = Math.floor(canvas.width / resolution); 
+    rows = Math.floor(canvas.height / resolution); 
+
+    // Reset data structures
+    clearGrid(); 
+
+    // Restore simulation state
+    if (wasRunning) { 
+        startSimulation(); 
+    } 
+}
+
+
+function randomizeGrid() {
+    const densityPct = parseInt(document.getElementById('densityInput').value) || 30;
+    const threshold = densityPct / 100;
+    const boundType = document.getElementById('boundInput').value;
+    
+    if (boundType === 'infinite') {
+        grid = new Set();
+        for (let i = -50; i < cols + 50; i++) {
+            for (let j = -50; j < rows + 50; j++) {
+                if (Math.random() < threshold) grid.add(pack(i, j));
+            }
+        }
+    } else {
+        for (let i = 0; i < cols; i++) {
+            for (let j = 0; j < rows; j++) {
+                grid[i][j] = Math.random() < threshold ? 1 : 0;
+            }
+        }
+    }
+    draw();
+}
+
+function clearGrid() {
+    grid = makeGrid();
+    nextGrid = makeGrid(); // Keep structures mirrors
+    draw();
+}
+
+function draw() {
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    const boundType = document.getElementById('boundInput').value;
+
+    if (boundType === 'infinite') {
+        ctx.save();
+        ctx.translate(offsetX, offsetY);
+        ctx.scale(scale, scale);
+
+        const leftG = Math.floor(-offsetX / (resolution * scale)) - 2;
+        const rightG = Math.ceil((canvas.width - offsetX) / (resolution * scale)) + 2;
+        const topG = Math.floor(-offsetY / (resolution * scale)) - 2;
+        const bottomG = Math.ceil((canvas.height - offsetY) / (resolution * scale)) + 2;
+
+        // Single batch stroke for grid lines
+        ctx.strokeStyle = '#222222';
+        ctx.lineWidth = 0.5 / scale;
+        ctx.beginPath();
+        for (let i = leftG; i <= rightG; i++) {
+            ctx.moveTo(i * resolution, topG * resolution);
+            ctx.lineTo(i * resolution, bottomG * resolution);
+        }
+        for (let j = topG; j <= bottomG; j++) {
+            ctx.moveTo(leftG * resolution, j * resolution);
+            ctx.lineTo(rightG * resolution, j * resolution);
+        }
+        ctx.stroke();
+
+        // Batch fill cells
+        ctx.fillStyle = '#00ffcc';
+        const sizeModifier = 1 / scale;
+        for (let cell of grid) {
+            const [cx, cy] = unpack(cell);
+            if (cx >= leftG && cx <= rightG && cy >= topG && cy <= bottomG) {
+                ctx.fillRect(cx * resolution, cy * resolution, resolution - sizeModifier, resolution - sizeModifier);
+            }
+        }
+        ctx.restore();
+    } else {
+        // Draw optimization for finite grids
+        ctx.strokeStyle = '#222222';
+        ctx.lineWidth = 0.5;
+
+        // Draw grid lines as one single batch path
+        ctx.beginPath();
+        for (let i = 0; i <= cols; i++) {
+            ctx.moveTo(i * resolution, 0);
+            ctx.lineTo(i * resolution, canvas.height);
+        }
+        for (let j = 0; j <= rows; j++) {
+            ctx.moveTo(0, j * resolution);
+            ctx.lineTo(canvas.width, j * resolution);
+        }
+        ctx.stroke();
+
+        // Batch render living cells only (Optimized to screen bounds)
+        ctx.fillStyle = '#00ffcc';
+        
+        // Calculate the maximum columns and rows visible on the screen canvas
+        const maxVisibleCols = Math.min(cols, Math.ceil(canvas.width / resolution));
+        const maxVisibleRows = Math.min(rows, Math.ceil(canvas.height / resolution));
+
+        for (let i = 0; i < maxVisibleCols; i++) {
+            for (let j = 0; j < maxVisibleRows; j++) {
+                if (grid[i][j] === 1) {
+                    ctx.fillRect(i * resolution, j * resolution, resolution - 1, resolution - 1);
+                }
+            }
+        }
+    }
+}
+
+
+function countNeighbors(g, x, y, boundType) {
+    let sum = 0;
+    for (let i = -1; i <= 1; i++) {
+        for (let j = -1; j <= 1; j++) {
+            if (i === 0 && j === 0) continue;
+            let col = x + i;
+            let row = y + j;
+            if (boundType === 'torus') {
+                col = (col + cols) % cols;
+                row = (row + rows) % rows;
+            } else if (boundType === 'fixed') {
+                if (col < 0 || col >= cols || row < 0 || row >= rows) continue;
+            } else if (boundType === 'clamp') {
+                col = Math.max(0, Math.min(cols - 1, col));
+                row = Math.max(0, Math.min(rows - 1, row));
+            }
+            sum += g[col][row];
+        }
+    }
+    return sum;
+}
+
+function computeNextGen() {
+    const boundType = document.getElementById('boundInput').value;
+    
+    if (boundType === 'infinite') {
+        let infiniteNextGrid = new Set();
+        let neighborCounts = new Map();
+        
+        // Use for...of over Set efficiently
+        grid.forEach(cell => {
+            const [cx, cy] = unpack(cell);
+            for (let i = -1; i <= 1; i++) {
+                for (let j = -1; j <= 1; j++) {
+                    if (i === 0 && j === 0) continue;
+                    const packedKey = pack(cx + i, cy + j);
+                    neighborCounts.set(packedKey, (neighborCounts.get(packedKey) || 0) + 1);
+                }
+            }
+        });
+        
+        // Check survival
+        grid.forEach(cell => {
+            const count = neighborCounts.get(cell) || 0;
+            if (cachedSurvival.includes(count)) {
+                infiniteNextGrid.add(cell);
+            }
+        });
+        
+        // Check births
+        for (let [cell, count] of neighborCounts.entries()) {
+            if (!grid.has(cell) && cachedBirth.includes(count)) {
+                infiniteNextGrid.add(cell);
+            }
+        }
+        grid = infiniteNextGrid;
+    } else {
+        // Optimized 2D array iteration via localized row caching
+        for (let i = 0; i < cols; i++) {
+            const gridRow = grid[i];
+            const nextGridRow = nextGrid[i];
+            
+            for (let j = 0; j < rows; j++) {
+                const state = gridRow[j];
+                const neighbors = countNeighbors(grid, i, j, boundType);
+                
+                // Fast assignment using conditional branches
+                if (state === 0) {
+                    nextGridRow[j] = cachedBirth.includes(neighbors) ? 1 : 0;
+                } else {
+                    nextGridRow[j] = cachedSurvival.includes(neighbors) ? 1 : 0;
+                }
+            }
+        }
+        
+        // Reference swap (Zero allocation)
+        let temp = grid;
+        grid = nextGrid;
+        nextGrid = temp;
+    }
+}
+
+let lastUpdateTime = 0;
+
+function update(timestamp) {
+    if (!isRunning) return;
+
+    const elapsed = timestamp - lastUpdateTime;
+    const fpsInterval = 1000 / fps;
+
+    if (elapsed >= fpsInterval) {
+        // Drop accumulated drift to prevent burst calculations
+        lastUpdateTime = timestamp - (elapsed % fpsInterval);
+        
+        computeNextGen();
+        draw();
+    }
+
+    animationId = requestAnimationFrame(update);
+}
+
+function startSimulation() {
+    if (!isRunning) {
+        isRunning = true;
+        lastUpdateTime = performance.now(); // Reset baseline time
+        animationId = requestAnimationFrame(update);
+    }
+}
+function pauseSimulation() {
+    if (isRunning) {
+        isRunning = false;
+        cancelAnimationFrame(animationId);
+    }
+}
+
+function handleMouseEvent(e) {
+    const boundType = document.getElementById('boundInput').value;
+    const rect = canvas.getBoundingClientRect();
+    const mouseX = (e.clientX - rect.left) * (canvas.width / rect.width);
+    const mouseY = (e.clientY - rect.top) * (canvas.height / rect.height);
+    let i, j;
+    if (boundType === 'infinite') {
+        i = Math.floor((mouseX - offsetX) / (resolution * scale));
+        j = Math.floor((mouseY - offsetY) / (resolution * scale));
+        const packedKey = pack(i, j);
+        if (drawMode === 1) {
+            grid.add(packedKey);
+        } else {
+            grid.delete(packedKey);
+        }
+        draw();
+    } else {
+        i = Math.floor(mouseX / resolution);
+        j = Math.floor(mouseY / resolution);
+        if (i >= 0 && i < cols && j >= 0 && j < rows) {
+            grid[i][j] = drawMode;
+            draw();
+        }
+    }
+}
+
+// Setup Interaction Event Listeners
+canvas.addEventListener('mousedown', (e) => {
+    const boundType = document.getElementById('boundInput').value;
+    if (boundType === 'infinite' && (e.shiftKey || e.button === 1)) {
+        isPanning = true;
+        startPanX = e.clientX - offsetX;
+        startPanY = e.clientY - offsetY;
+    } else {
+        isDrawing = true;
+        drawMode = (e.button === 2) ? 0 : 1;
+        handleMouseEvent(e);
+    }
+});
+
+canvas.addEventListener('mousemove', (e) => {
+    if (isPanning) {
+        offsetX = e.clientX - startPanX;
+        offsetY = e.clientY - startPanY;
+        draw();
+    } else if (isDrawing) {
+        handleMouseEvent(e);
+    }
+});
+
+window.addEventListener('mouseup', () => {
+    isDrawing = false;
+    isPanning = false;
+});
+
+canvas.addEventListener('wheel', (e) => {
+    const boundType = document.getElementById('boundInput').value;
+    if (boundType !== 'infinite') return;
+    e.preventDefault();
+    const rect = canvas.getBoundingClientRect();
+    const mouseX = (e.clientX - rect.left) * (canvas.width / rect.width);
+    const mouseY = (e.clientY - rect.top) * (canvas.height / rect.height);
+    const zoomFactor = e.deltaY < 0 ? 1.1 : 1 / 1.1;
+    const nextScale = Math.max(0.1, Math.min(20, scale * zoomFactor));
+    offsetX = mouseX - (mouseX - offsetX) * (nextScale / scale);
+    offsetY = mouseY - (mouseY - offsetY) * (nextScale / scale);
+    scale = nextScale;
+    draw();
+}, { passive: false });
+
+canvas.addEventListener('contextmenu', (e) => { 
+    e.preventDefault(); 
+});
+
+// Setup dynamic modification listeners
+document.getElementById('ruleInput').addEventListener('input', cacheRules);
+
+// Initialize application engines and structures
+grid = makeGrid();
+nextGrid = makeGrid();
+cacheRules();
+draw();
+      </script>
+   </body>
+</html>
+
+
