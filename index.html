@@ -3,7 +3,7 @@
    <head>
       <meta charset="UTF-8">
       <meta name="viewport" content="width=device-width, initial-scale=1.0">
-      <title>Custom Game of Life Emulator</title>
+      <title>Conway's Game of Life</title>
       <style>
          body {
          font-family: Arial, sans-serif;
@@ -71,12 +71,12 @@
          <label>Height: <input type="number" id="heightInput" value="600" min="100" max="2000" step="50"></label>
          <label>Cell Size: <input type="number" id="resInput" value="10" min="2" max="50"></label>
          <button onclick="updateSize()">Apply Size</button>
-         <!-- Speed Slider -->
+         <!-- speed -->
          <label>Speed (FPS): 
          <input type="range" id="speedInput" min="1" max="60" value="30" oninput="updateFPSLabel(this.value)">
          <span id="fpsLabel">30</span>
          </label>
-         <!-- New Density Slider -->
+         <!-- random density -->
          <label>Density: 
          <input type="range" id="densityInput" min="1" max="100" value="30" oninput="updateDensityLabel(this.value)">
          <span id="densityLabel">30</span>%
@@ -86,9 +86,9 @@
          <button onclick="randomizeGrid()">Randomize</button>
          <button onclick="clearGrid()">Clear</button>
       </div>
-      <!-- Instructions for the user -->
+      <!-- instructions -->
       <p id="instructionText" style="color: #aaa; font-size: 14px; margin-top: 15px;">
-         💡 <strong>Controls:</strong> Shift + Left-click/drag to pan view. Scroll to zoom. Left-click to paint cells. Right-click to erase.
+          <strong>Controls:</strong> Shift + Left-click/drag to pan view. Scroll to zoom. Left-click to paint cells. Right-click to erase.
       </p>
       <canvas id="lifeCanvas" width="600" height="600"></canvas>
       <script>
@@ -98,7 +98,7 @@ let resolution = 10;
 let cols = canvas.width / resolution;
 let rows = canvas.height / resolution;
 
-// Double buffering to eliminate GC pauses
+// code
 let grid;
 let nextGrid;
 
@@ -114,12 +114,12 @@ let startPanX = 0;
 let startPanY = 0;
 let drawMode = 1;
 
-// Cached rule arrays updated only when inputs change
+// cache
 let cachedBirth
 let cachedSurvival
 
 function pack(x, y) {
-    // Fast shift operations using 32-bit integers inside BigInt
+    // fast shift operations
     return (BigInt(x & 0xFFFFFFFF) << 32n) | BigInt(y & 0xFFFFFFFF);
 }
 
@@ -138,7 +138,7 @@ function updateDensityLabel(val) {
     document.getElementById('densityLabel').innerText = val;
 }
 
-// Allocates memory once
+// allocates memory once
 function allocateFiniteGrid() {
     let arr = new Array(cols);
     for (let i = 0; i < arr.length; i++) {
@@ -155,7 +155,7 @@ function makeGrid() {
     return allocateFiniteGrid();
 }
 
-// Cache rules on demand instead of every frame
+// cache rules on demand instead of every frame
 function cacheRules() {
     const ruleStr = document.getElementById('ruleInput').value;
     const birth = [];
@@ -177,35 +177,35 @@ function handleBoundaryChange() {
     const boundType = document.getElementById('boundInput').value;
     const instructions = document.getElementById('instructionText');
     if (boundType === 'infinite') {
-        instructions.innerHTML = `💡 <strong>Infinite Controls:</strong> Shift + Left-click & drag to pan. Scroll wheel to zoom. Left-click to draw. Right-click to erase.`;
+        instructions.innerHTML = ` <strong>Infinite Controls:</strong> Shift + Left-click & drag to pan. Scroll wheel to zoom. Left-click to draw. Right-click to erase.`;
     } else {
-        instructions.innerHTML = `💡 <strong>Controls:</strong> Left-click and drag to paint cells. Right-click and drag to erase.`;
+        instructions.innerHTML = ` <strong>Controls:</strong> Left-click and drag to paint cells. Right-click and drag to erase.`;
     }
     clearGrid();
 }
 
 function updateSize() { 
-    // Save simulation state
+    // save simulation state
     const wasRunning = isRunning; 
     pauseSimulation(); 
 
-    // Read and validate layout inputs
+    // read and validate layout inputs
     const newWidth = parseInt(document.getElementById('widthInput').value) || 600; 
     const newHeight = parseInt(document.getElementById('heightInput').value) || 600; 
     resolution = parseInt(document.getElementById('resInput').value) || 10; 
 
-    // Apply new canvas dimensions
+    // apply new canvas dimensions
     canvas.width = newWidth; 
     canvas.height = newHeight; 
 
-    // Recalculate grid dimensions
+    // recalculate grid dimensions
     cols = Math.floor(canvas.width / resolution); 
     rows = Math.floor(canvas.height / resolution); 
 
-    // Reset data structures
+    // reset data structures
     clearGrid(); 
 
-    // Restore simulation state
+    // restore simulation state
     if (wasRunning) { 
         startSimulation(); 
     } 
@@ -236,7 +236,7 @@ function randomizeGrid() {
 
 function clearGrid() {
     grid = makeGrid();
-    nextGrid = makeGrid(); // Keep structures mirrors
+    nextGrid = makeGrid(); // keep structures mirrors
     draw();
 }
 
@@ -254,7 +254,7 @@ function draw() {
         const topG = Math.floor(-offsetY / (resolution * scale)) - 2;
         const bottomG = Math.ceil((canvas.height - offsetY) / (resolution * scale)) + 2;
 
-        // Single batch stroke for grid lines
+        // single stroke for grid lines
         ctx.strokeStyle = '#222222';
         ctx.lineWidth = 0.5 / scale;
         ctx.beginPath();
@@ -268,7 +268,6 @@ function draw() {
         }
         ctx.stroke();
 
-        // Batch fill cells
         ctx.fillStyle = '#00ffcc';
         const sizeModifier = 1 / scale;
         for (let cell of grid) {
@@ -279,11 +278,11 @@ function draw() {
         }
         ctx.restore();
     } else {
-        // Draw optimization for finite grids
+        // draw optimization for finite grids
         ctx.strokeStyle = '#222222';
         ctx.lineWidth = 0.5;
 
-        // Draw grid lines as one single batch path
+        // draw grid lines
         ctx.beginPath();
         for (let i = 0; i <= cols; i++) {
             ctx.moveTo(i * resolution, 0);
@@ -295,10 +294,10 @@ function draw() {
         }
         ctx.stroke();
 
-        // Batch render living cells only (Optimized to screen bounds)
+        // batch render living cells only
         ctx.fillStyle = '#00ffcc';
         
-        // Calculate the maximum columns and rows visible on the screen canvas
+        // calculate the maximum columns and rows visible on the screen canvas
         const maxVisibleCols = Math.min(cols, Math.ceil(canvas.width / resolution));
         const maxVisibleRows = Math.min(rows, Math.ceil(canvas.height / resolution));
 
@@ -342,7 +341,6 @@ function computeNextGen() {
         let infiniteNextGrid = new Set();
         let neighborCounts = new Map();
         
-        // Use for...of over Set efficiently
         grid.forEach(cell => {
             const [cx, cy] = unpack(cell);
             for (let i = -1; i <= 1; i++) {
@@ -354,7 +352,7 @@ function computeNextGen() {
             }
         });
         
-        // Check survival
+        // check survival
         grid.forEach(cell => {
             const count = neighborCounts.get(cell) || 0;
             if (cachedSurvival.includes(count)) {
@@ -362,7 +360,7 @@ function computeNextGen() {
             }
         });
         
-        // Check births
+        // check births
         for (let [cell, count] of neighborCounts.entries()) {
             if (!grid.has(cell) && cachedBirth.includes(count)) {
                 infiniteNextGrid.add(cell);
@@ -370,7 +368,6 @@ function computeNextGen() {
         }
         grid = infiniteNextGrid;
     } else {
-        // Optimized 2D array iteration via localized row caching
         for (let i = 0; i < cols; i++) {
             const gridRow = grid[i];
             const nextGridRow = nextGrid[i];
@@ -379,7 +376,6 @@ function computeNextGen() {
                 const state = gridRow[j];
                 const neighbors = countNeighbors(grid, i, j, boundType);
                 
-                // Fast assignment using conditional branches
                 if (state === 0) {
                     nextGridRow[j] = cachedBirth.includes(neighbors) ? 1 : 0;
                 } else {
@@ -388,7 +384,6 @@ function computeNextGen() {
             }
         }
         
-        // Reference swap (Zero allocation)
         let temp = grid;
         grid = nextGrid;
         nextGrid = temp;
@@ -404,7 +399,6 @@ function update(timestamp) {
     const fpsInterval = 1000 / fps;
 
     if (elapsed >= fpsInterval) {
-        // Drop accumulated drift to prevent burst calculations
         lastUpdateTime = timestamp - (elapsed % fpsInterval);
         
         computeNextGen();
@@ -417,7 +411,7 @@ function update(timestamp) {
 function startSimulation() {
     if (!isRunning) {
         isRunning = true;
-        lastUpdateTime = performance.now(); // Reset baseline time
+        lastUpdateTime = performance.now(); // reset baseline time
         animationId = requestAnimationFrame(update);
     }
 }
@@ -454,7 +448,7 @@ function handleMouseEvent(e) {
     }
 }
 
-// Setup Interaction Event Listeners
+// setup event listeners
 canvas.addEventListener('mousedown', (e) => {
     const boundType = document.getElementById('boundInput').value;
     if (boundType === 'infinite' && (e.shiftKey || e.button === 1)) {
@@ -502,10 +496,10 @@ canvas.addEventListener('contextmenu', (e) => {
     e.preventDefault(); 
 });
 
-// Setup dynamic modification listeners
+// setup modification listeners
 document.getElementById('ruleInput').addEventListener('input', cacheRules);
 
-// Initialize application engines and structures
+// init
 grid = makeGrid();
 nextGrid = makeGrid();
 cacheRules();
